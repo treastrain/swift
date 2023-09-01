@@ -256,10 +256,17 @@ IndexSubset *SILFunctionType::getDifferentiabilityResultIndices() {
     // parameters are not treated as differentiability results.
     if (resultParamAndIndex.value().getDifferentiability() !=
         SILParameterDifferentiability::NotDifferentiable)
-      resultIndices.push_back(getNumResults() + resultParamAndIndex.index());
+      resultIndices.push_back(numSemanticResults + resultParamAndIndex.index());
 
   numSemanticResults += getNumAutoDiffSemanticResultsParameters();
 
+  // Check yields.
+  for (auto yieldAndIndex : enumerate(getYields()))
+    if (yieldAndIndex.value().getDifferentiability() !=
+        SILParameterDifferentiability::NotDifferentiable)
+      resultIndices.push_back(numSemanticResults + yieldAndIndex.index());
+
+  numSemanticResults += getNumIndirectFormalYields();
   return IndexSubset::get(getASTContext(), numSemanticResults, resultIndices);
 }
 
@@ -559,10 +566,14 @@ static CanSILFunctionType getAutoDiffDifferentialType(
         param.getConvention());
     differentialParams.push_back({paramTanType, paramConv});
   }
+  
   SmallVector<SILResultInfo, 1> differentialResults;
+  unsigned firstSemanticParamResultIdx = originalFnTy->getNumResults();
+  unsigned firstYieldResultIndex = originalFnTy->getNumResults() +
+      originalFnTy->getNumAutoDiffSemanticResultsParameters();
   for (auto resultIndex : resultIndices->getIndices()) {
     // Handle formal original result.
-    if (resultIndex < originalFnTy->getNumResults()) {
+    if (resultIndex < firstSemanticParamResultIdx) {
       auto &result = originalResults[resultIndex];
       auto resultTanType = getAutoDiffTangentTypeForLinearMap(
           result.getInterfaceType(), lookupConformance,
@@ -575,26 +586,38 @@ static CanSILFunctionType getAutoDiffDifferentialType(
           result.getConvention());
       differentialResults.push_back({resultTanType, resultConv});
       continue;
-    }
-    // Handle original semantic result parameters.
-    auto resultParamIndex = resultIndex - originalFnTy->getNumResults();
-    auto resultParamIt = std::next(
+    } else if (resultIndex < firstYieldResultIndex) {
+      // Handle original semantic result parameters.
+      auto resultParamIndex = resultIndex - originalFnTy->getNumResults();
+      auto resultParamIt = std::next(
         originalFnTy->getAutoDiffSemanticResultsParameters().begin(),
         resultParamIndex);
-    auto paramIndex =
-      std::distance(originalFnTy->getParameters().begin(), &*resultParamIt);
-    // If the original semantic result parameter is a differentiability
-    // parameter, then it already has a corresponding differential
-    // parameter. Skip adding a corresponding differential result.
-    if (parameterIndices->contains(paramIndex))
-      continue;
+      auto paramIndex =
+        std::distance(originalFnTy->getParameters().begin(), &*resultParamIt);
+      // If the original semantic result parameter is a differentiability
+      // parameter, then it already has a corresponding differential
+      // parameter. Skip adding a corresponding differential result.
+      if (parameterIndices->contains(paramIndex))
+        continue;
 
-    auto resultParam = originalFnTy->getParameters()[paramIndex];
-    auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
-      resultParam.getInterfaceType(), lookupConformance,
+      auto resultParam = originalFnTy->getParameters()[paramIndex];
+      auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
+        resultParam.getInterfaceType(), lookupConformance,
         substGenericParams, substReplacements, ctx);
-    differentialResults.emplace_back(resultParamTanType,
-                                     ResultConvention::Indirect);
+      differentialResults.emplace_back(resultParamTanType,
+                                       ResultConvention::Indirect);
+    } else {
+      assert(originalFnTy->isCoroutine());
+      assert(originalFnTy->getCoroutineKind() == SILCoroutineKind::YieldOnce);
+      auto yieldResultIndex = resultIndex - firstYieldResultIndex;
+      auto yieldResult = originalFnTy->getYields()[yieldResultIndex];
+      auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
+        yieldResult.getInterfaceType(), lookupConformance,
+        substGenericParams, substReplacements, ctx);
+      ParameterConvention paramTanConvention = yieldResult.getConvention();
+      assert(yieldResult.getConvention() == ParameterConvention::Indirect_Inout);
+      differentialParams.emplace_back(resultParamTanType, paramTanConvention);
+    }
   }
 
   SubstitutionMap substitutions;
@@ -608,9 +631,9 @@ static CanSILFunctionType getAutoDiffDifferentialType(
   }
   return SILFunctionType::get(
       GenericSignature(), SILFunctionType::ExtInfo(), SILCoroutineKind::None,
-      ParameterConvention::Direct_Guaranteed, differentialParams, {},
-      differentialResults, llvm::None, substitutions,
-      /*invocationSubstitutions*/ SubstitutionMap(), ctx);
+      ParameterConvention::Direct_Guaranteed,
+      differentialParams, {}, differentialResults, llvm::None,
+      substitutions, /*invocationSubstitutions*/ SubstitutionMap(), ctx);
 }
 
 /// Returns the pullback type for the given original function type, parameter
@@ -700,11 +723,15 @@ static CanSILFunctionType getAutoDiffPullbackType(
     return conv;
   };
 
-  // Collect pullback parameters.
+  // Collect pullback parameters & yields
   SmallVector<SILParameterInfo, 1> pullbackParams;
+  SmallVector<SILYieldInfo, 1> pullbackYields;
+  unsigned firstSemanticParamResultIdx = originalFnTy->getNumResults();
+  unsigned firstYieldResultIndex = originalFnTy->getNumResults() +
+      originalFnTy->getNumAutoDiffSemanticResultsParameters();
   for (auto resultIndex : resultIndices->getIndices()) {
     // Handle formal original result.
-    if (resultIndex < originalFnTy->getNumResults()) {
+    if (resultIndex < firstSemanticParamResultIdx) {
       auto &origRes = originalResults[resultIndex];
       auto resultTanType = getAutoDiffTangentTypeForLinearMap(
           origRes.getInterfaceType(), lookupConformance,
@@ -716,28 +743,38 @@ static CanSILFunctionType getAutoDiffPullbackType(
               ->getCanonicalType(),
           origRes.getConvention());
       pullbackParams.emplace_back(resultTanType, paramConv);
-      continue;
+    } else if (resultIndex < firstYieldResultIndex) {
+      // Handle original semantic result parameters.
+      auto resultParamIndex = resultIndex - firstSemanticParamResultIdx;
+      auto resultParamIt = std::next(
+        originalFnTy->getAutoDiffSemanticResultsParameters().begin(),
+        resultParamIndex);
+      auto paramIndex =
+        std::distance(originalFnTy->getParameters().begin(), &*resultParamIt);
+      auto resultParam = originalFnTy->getParameters()[paramIndex];
+      // The pullback parameter convention depends on whether the original `inout`
+      // parameter is a differentiability parameter.
+      // - If yes, the pullback parameter convention is `@inout`.
+      // - If no, the pullback parameter convention is `@in_guaranteed`.
+      auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
+        resultParam.getInterfaceType(), lookupConformance,
+        substGenericParams, substReplacements, ctx);
+      ParameterConvention paramTanConvention = resultParam.getConvention();
+      if (!parameterIndices->contains(paramIndex))
+        paramTanConvention = ParameterConvention::Indirect_In_Guaranteed;
+      pullbackParams.emplace_back(resultParamTanType, paramTanConvention);
+    } else {
+      assert(originalFnTy->isCoroutine());
+      assert(originalFnTy->getCoroutineKind() == SILCoroutineKind::YieldOnce);
+      auto yieldResultIndex = resultIndex - firstYieldResultIndex;
+      auto yieldResult = originalFnTy->getYields()[yieldResultIndex];
+      auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
+        yieldResult.getInterfaceType(), lookupConformance,
+        substGenericParams, substReplacements, ctx);
+      ParameterConvention paramTanConvention = yieldResult.getConvention();
+      assert(yieldResult.getConvention() == ParameterConvention::Indirect_Inout);
+      pullbackYields.emplace_back(resultParamTanType, paramTanConvention);
     }
-    // Handle original semantic result parameters.
-    auto resultParamIndex = resultIndex - originalFnTy->getNumResults();
-    auto resultParamIt = std::next(
-      originalFnTy->getAutoDiffSemanticResultsParameters().begin(),
-      resultParamIndex);
-    auto paramIndex =
-      std::distance(originalFnTy->getParameters().begin(), &*resultParamIt);
-    auto resultParam = originalFnTy->getParameters()[paramIndex];
-    // The pullback parameter convention depends on whether the original `inout`
-    // parameter is a differentiability parameter.
-    // - If yes, the pullback parameter convention is `@inout`.
-    // - If no, the pullback parameter convention is `@in_guaranteed`.
-    auto resultParamTanType = getAutoDiffTangentTypeForLinearMap(
-      resultParam.getInterfaceType(), lookupConformance,
-      substGenericParams, substReplacements, ctx);
-    ParameterConvention paramTanConvention = resultParam.getConvention();
-    if (!parameterIndices->contains(paramIndex))
-      paramTanConvention = ParameterConvention::Indirect_In_Guaranteed;
-
-    pullbackParams.emplace_back(resultParamTanType, paramTanConvention);
   }
 
   // Collect pullback results.
@@ -760,6 +797,7 @@ static CanSILFunctionType getAutoDiffPullbackType(
         param.getConvention());
     pullbackResults.push_back({paramTanType, resultTanConvention});
   }
+  
   SubstitutionMap substitutions;
   if (!substGenericParams.empty()) {
     auto genericSig =
@@ -772,7 +810,7 @@ static CanSILFunctionType getAutoDiffPullbackType(
   return SILFunctionType::get(
       GenericSignature(), SILFunctionType::ExtInfo(), originalFnTy->getCoroutineKind(),
       ParameterConvention::Direct_Guaranteed,
-      pullbackParams, {}, pullbackResults, llvm::None, substitutions,
+      pullbackParams, pullbackYields, pullbackResults, llvm::None, substitutions,
       /*invocationSubstitutions*/ SubstitutionMap(), ctx);
 }
 
@@ -900,7 +938,7 @@ CanSILFunctionType SILFunctionType::getAutoDiffDerivativeFunctionType(
                                 origTypeOfAbstraction, TC);
     break;
   }
-  
+
   // Compute the derivative function parameters.
   SmallVector<SILParameterInfo, 4> newParameters;
   newParameters.reserve(constrainedOriginalFnTy->getNumParameters());
@@ -924,10 +962,9 @@ CanSILFunctionType SILFunctionType::getAutoDiffDerivativeFunctionType(
   // Compute the derivative function results.
   SmallVector<SILResultInfo, 4> newResults;
   newResults.reserve(getNumResults() + 1);
-  for (auto &result : constrainedOriginalFnTy->getResults()) {
+  for (auto &result : constrainedOriginalFnTy->getResults())
     newResults.push_back(result);
-  }
-  newResults.push_back({closureType, ResultConvention::Owned});
+  newResults.emplace_back(closureType, ResultConvention::Owned);
 
   // Compute the derivative function ExtInfo.
   // If original function is `@convention(c)`, the derivative function should
