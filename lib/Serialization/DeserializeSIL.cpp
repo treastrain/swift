@@ -1558,6 +1558,7 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
   ONEOPERAND_ONETYPE_INST(ObjCMetatypeToObject)
   ONEOPERAND_ONETYPE_INST(ObjCExistentialMetatypeToObject)
   ONEOPERAND_ONETYPE_INST(ProjectBlockStorage)
+  ONEOPERAND_ONETYPE_INST(EndApply)
 #undef ONEOPERAND_ONETYPE_INST
 
   case SILInstructionKind::AddressToPointerInst: {
@@ -2174,7 +2175,6 @@ bool SILDeserializer::readSILInstruction(SILFunction *Fn,
   REFCOUNTING_INSTRUCTION(StrongRelease)
   UNARY_INSTRUCTION(IsUnique)
   UNARY_INSTRUCTION(AbortApply)
-  UNARY_INSTRUCTION(EndApply)
   UNARY_INSTRUCTION(ExtractExecutor)
 #undef UNARY_INSTRUCTION
 #undef REFCOUNTING_INSTRUCTION
