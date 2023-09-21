@@ -534,17 +534,33 @@ getResultDifferentiability(ImplResultDifferentiability diffKind) {
   llvm_unreachable("unknown differentiability kind");
 }
 
+static SILCoroutineKind
+getCoroutineKind(ImplCoroutineKind kind) {
+  switch (kind) {
+  case ImplCoroutineKind::None:
+    return SILCoroutineKind::None;
+  case ImplCoroutineKind::YieldOnce:
+    return SILCoroutineKind::YieldOnce;
+  case ImplCoroutineKind::YieldMany:
+    return SILCoroutineKind::YieldMany;
+  }
+  llvm_unreachable("unknown coroutine kind");
+}
+
 Type ASTBuilder::createImplFunctionType(
     Demangle::ImplParameterConvention calleeConvention,
+    Demangle::ImplCoroutineKind coroutineKind,
     ArrayRef<Demangle::ImplFunctionParam<Type>> params,
+    ArrayRef<Demangle::ImplFunctionYield<Type>> yields,
     ArrayRef<Demangle::ImplFunctionResult<Type>> results,
     llvm::Optional<Demangle::ImplFunctionResult<Type>> errorResult,
     ImplFunctionTypeFlags flags) {
   GenericSignature genericSig;
 
-  SILCoroutineKind funcCoroutineKind = SILCoroutineKind::None;
   ParameterConvention funcCalleeConvention =
     getParameterConvention(calleeConvention);
+  SILCoroutineKind funcCoroutineKind =
+    getCoroutineKind(coroutineKind);
 
   SILFunctionTypeRepresentation representation;
   switch (flags.getRepresentation()) {
@@ -601,6 +617,13 @@ Type ASTBuilder::createImplFunctionType(
     auto conv = getParameterConvention(param.getConvention());
     auto diffKind = getParameterDifferentiability(param.getDifferentiability());
     funcParams.emplace_back(type, conv, diffKind);
+  }
+
+  for (const auto &yield : yields) {
+    auto type = yield.getType()->getCanonicalType();
+    auto conv = getParameterConvention(yield.getConvention());
+    auto diffKind = getParameterDifferentiability(yield.getDifferentiability());
+    funcYields.emplace_back(type, conv);
   }
 
   for (const auto &result : results) {
