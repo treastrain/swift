@@ -4919,7 +4919,7 @@ public:
   unsigned getNumAutoDiffSemanticResults() const {
     return getNumResults() +
            getNumAutoDiffSemanticResultsParameters() +
-           getNumIndirectFormalYields();
+           getNumYields();
   }
 
   /// Get the generic signature that the component types are specified
