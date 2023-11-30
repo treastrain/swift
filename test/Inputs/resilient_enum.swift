@@ -58,9 +58,21 @@ public enum Medium {
   case Canvas                     // 1
 }
 
+
+package enum PkgMedium {
+  indirect case Pamphlet(PkgMedium)
+  case Postcard(Size)
+  case Paper
+  case Canvas
+}
+
 // Indirect resilient enum
 public indirect enum IndirectApproach {
   case Angle(Double)              // -1
+}
+
+package indirect enum PkgIndirectEnum {
+  case Angle(Double)
 }
 
 // Resilient enum with resilient empty payload case
@@ -97,7 +109,20 @@ public enum ResilientNoPayloadEnum {
   case C
 }
 
+package enum PkgNoPayloadEnum {
+  case A
+  case B
+  case C
+}
+
 public enum ResilientSinglePayloadEnum {
+  case X(AnyObject)               // -1
+  case A                          // 0
+  case B                          // 1
+  case C                          // 2
+}
+
+package enum PkgSinglePayloadEnum {
   case X(AnyObject)               // -1
   case A                          // 0
   case B                          // 1
@@ -111,11 +136,26 @@ public enum ResilientSinglePayloadGenericEnum<T> {
   case C                          // 2
 }
 
+package enum PkgSinglePayloadGenericEnum<T> {
+  case X(T)                       // -1
+  case A                          // 0
+  case B                          // 1
+  case C                          // 2
+}
+
 public class ArtClass {
   public init() {}
 }
 
 public enum ResilientMultiPayloadEnum {
+  case A
+  case B
+  case C
+  case X(Int)
+  case Y(Int)
+}
+
+package enum PkgMultiPayloadEnum {
   case A
   case B
   case C
